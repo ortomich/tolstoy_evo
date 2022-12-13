@@ -47,49 +47,19 @@ func runScanner(db *sql.DB) {
 	rpc_index := 1
 	client := reconnect(&rpc_index)
 
-	poolContractAddress := common.HexToAddress(os.Getenv("POOL_CONTRACT"))
-	poolContract, err := NewCasinoPool(poolContractAddress, client)
+	unionWalletAddress := common.HexToAddress(os.Getenv("UNIONWALLET_CONTRACT"))
+	unionWallet, err := NewUnionWallet(unionWalletAddress, client)
 	if err != nil {
 		log.Fatal("Failed to create Pool contract binding:", err)
 	}
 
-	slotsContractAddress := common.HexToAddress(os.Getenv("SLOTS_CONTRACT"))
-	slotsContract, err := NewSlots(slotsContractAddress, client)
-	if err != nil {
-		log.Fatal("Failed to create slots contract binding:", err)
-	}
+	unionWalletLinkSignature := []byte("Link(address,address)")
+	unionWalletLinkSignatureHash := crypto.Keccak256Hash(unionWalletLinkSignature)
+    log.Printf("unionWalletLinkSignatureHash %v", unionWalletLinkSignatureHash.Hex())
 
-	rouletteContractAddress := common.HexToAddress(os.Getenv("ROULETTE_CONTRACT"))
-	rouletteContract, err := NewSlots(rouletteContractAddress, client)
-	if err != nil {
-		log.Fatal("Failed to create roulette contract binding:", err)
-	}
-
-	coinflipContractAddress := common.HexToAddress(os.Getenv("COINFLIP_CONTRACT"))
-	coinflipContract, err := NewCoinflip(coinflipContractAddress, client)
-	if err != nil {
-		log.Fatal("Failed to create coinflip contract binding:", err)
-	}
-
-	slotsGameResEventSignature := []byte("GameResEvent(uint256,address,uint256,uint256,uint256,uint256)")
-	slotsGameResEventSignatureHash := crypto.Keccak256Hash(slotsGameResEventSignature)
-    log.Printf("slotsGameResEventSignatureHash %v", slotsGameResEventSignatureHash.Hex())
-
-	rouletteGameResEventSignature := []byte("GameResEvent(uint256,address,uint256,uint256)");
-	rouletteGameResEventSignatureHash := crypto.Keccak256Hash(rouletteGameResEventSignature)
-	log.Printf("rouletteGameResEventSignatureHash %v", rouletteGameResEventSignatureHash.Hex())
-
-	coinflipGameResEventSignature := []byte("GameResEvent(uint256,address,uint256,uint256)");
-	coinflipGameResEventSignatureHash := crypto.Keccak256Hash(coinflipGameResEventSignature)
-	log.Printf("coinflipGameResEventSignatureHash %v", coinflipGameResEventSignatureHash.Hex())
-
-	poolSharePriceChangedEventSiganture := []byte("SharePriceChanged(uint256,uint256)")
-	poolSharePriceChangedEventSigantureHash := crypto.Keccak256Hash(poolSharePriceChangedEventSiganture)
-	log.Printf("poolSharePriceChangedEventSigantureHash %v", poolSharePriceChangedEventSigantureHash.Hex())
-
-	poolReferralPaymentSiganture := []byte("ReferralPayment(address,uint256)")
-	poolReferralPaymentSigantureHash := crypto.Keccak256Hash(poolReferralPaymentSiganture)
-	log.Printf("poolReferralPaymentSigantureHash %v", poolReferralPaymentSigantureHash.Hex())
+	unionWalletUnLinkSignature := []byte("UnLink(address,address)")
+	unionWalletUnLinkSignatureHash := crypto.Keccak256Hash(unionWalletUnLinkSignature)
+    log.Printf("unionWalletUnLinkSignatureHash %v", unionWalletUnLinkSignatureHash.Hex())
 
 	opts := new(bind.FilterOpts)
 	opts.Start = 29367000
@@ -103,11 +73,10 @@ func runScanner(db *sql.DB) {
 			FromBlock: big.NewInt(int64(opts.Start)),
 			ToBlock:   big.NewInt(int64(*opts.End)),
 			Addresses: []common.Address{
-				poolContractAddress, slotsContractAddress, coinflipContractAddress,
-				rouletteContractAddress,
+				unionWalletAddress
 			},
 			Topics: [][]common.Hash{
-				{slotsGameResEventSignatureHash, rouletteGameResEventSignatureHash},
+				{unionWalletLinkSignatureHash, unionWalletUnLinkSignatureHash},
 			},
 		}
 
@@ -123,18 +92,18 @@ func runScanner(db *sql.DB) {
 		log.Printf("Query=%v", query, "Logs=%v", rawLogs)
 
 		for _, rawLog := range(rawLogs) {
-			if rawLog.Address == slotsContractAddress && rawLog.Topics[0] == slotsGameResEventSignatureHash {
-				slotGameResLog, err := slotsContract.ParseGameResEvent(rawLog)
+			if rawLog.Address == unionWalletAddress && rawLog.Topics[0] == unionWalletLinkSignatureHash {
+				unionWalletLog, err := unionWallet.ParseGameResEvent(rawLog)
 				if err != nil {
-					log.Fatalf("Unable to parse slots::GameResEvent %v", err)
+					log.Fatalf("Unable to parse unionWallet::Link %v", err)
 				}
 		
-				log.Printf("Found Slots Game Res %v", rawLog)
-				_, err = db.Exec("INSERT IGNORE INTO recent_games(tx, block_number, game_type, player, amount) VALUES (?, ?, 'SLOT', ?, ?)",
+				log.Printf("Found unionWallet Link %v", rawLog)
+				_, err = db.Exec("INSERT IGNORE INTO Link(tx, block_number, user, identity) VALUES (?, ?, ?, ?)",
 					rawLog.TxHash.String(),
 					rawLog.BlockNumber,
-					slotGameResLog.UserAddress.Hex(),
-					big.NewInt(0).Div(slotGameResLog.WinAmount, big.NewInt(0x100000000)).Uint64());
+					unionWalletLog.user.Hex(),
+					unionWalletLog.identity.Hex());
 	
 				if err != nil {
 					log.Fatal("Unable to insert to DB: %v", err)
@@ -142,80 +111,24 @@ func runScanner(db *sql.DB) {
 				continue
 			}
 
-			if rawLog.Address == rouletteContractAddress && rawLog.Topics[0] == rouletteGameResEventSignatureHash {
-				rouletteGameResLog, err := rouletteContract.ParseGameResEvent(rawLog)
+			if rawLog.Address == unionWalletAddress && rawLog.Topics[0] == unionWalletUnLinkSignatureHash {
+				unionWalletLog, err := unionWallet.ParseGameResEvent(rawLog)
 				if err != nil {
-					log.Fatalf("Unable to parse roulette::GameResEvent %v", err)
-				}
-
-				log.Printf("Found Roulette Game Res %v", rawLog)
-	
-				_, err = db.Exec("INSERT IGNORE INTO recent_games(tx, block_number, game_type, player, amount) VALUES (?, ?, 'ROULETTE', ?, ?)",
-					rawLog.TxHash.String(),
-					rawLog.BlockNumber,
-					rouletteGameResLog.UserAddress.Hex(),
-					big.NewInt(0).Div(rouletteGameResLog.WinAmount, big.NewInt(0x100000000)).Uint64());
-	
-				if err != nil {
-					log.Fatal("Unable to insert to DB: %v", err)
-				}
-				continue
-			}
-
-			if rawLog.Address == coinflipContractAddress && rawLog.Topics[0] == coinflipGameResEventSignatureHash {
-				coinflipGameResLog, err := coinflipContract.ParseGameResEvent(rawLog)
-				if err != nil {
-					log.Fatalf("Unable to parse coinflip::GameResEvent %v", err)
+					log.Fatalf("Unable to parse unionWallet::UnLink %v", err)
 				}
 		
-				_, err = db.Exec("INSERT IGNORE INTO recent_games(tx, block_number, game_type, player, amount) VALUES (?, ?, 'COINFLIP', ?, ?)",
+				log.Printf("Found unionWallet Link %v", rawLog)
+				_, err = db.Exec(("DELETE FROM Link WHERE user = %v", unionWalletLog.user.Hex()),
 					rawLog.TxHash.String(),
 					rawLog.BlockNumber,
-					coinflipGameResLog.UserAddress.Hex(),
-					big.NewInt(0).Div(coinflipGameResLog.WinAmount, big.NewInt(0x100000000)).Uint64());
+					unionWalletLog.user.Hex(),
+					unionWalletLog.identity.Hex());
 	
 				if err != nil {
 					log.Fatal("Unable to insert to DB: %v", err)
 				}
 				continue
 			}
-
-			if rawLog.Address == poolContractAddress && rawLog.Topics[0] == poolSharePriceChangedEventSigantureHash {
-				poolContractSharePriceChangedResLog, err := poolContract.ParseSharePriceChanged(rawLog)
-				if err != nil {
-					log.Fatalf("Unable to parse poolContract::SharePriceChanged %v", err)
-				}
-		
-				_, err = db.Exec("INSERT IGNORE INTO pnl_changes (tx, block_number, stored_eth, total_shares) VALUES (?, ?, ?, ?)",
-					rawLog.TxHash.String(),
-					rawLog.BlockNumber,
-					big.NewInt(0).Div(poolContractSharePriceChangedResLog.NewPriceNom, big.NewInt(0x100000000)).Uint64(),
-					big.NewInt(0).Div(poolContractSharePriceChangedResLog.NewPriceDenom, big.NewInt(0x100000000)).Uint64());
-
-				if err != nil {
-					log.Fatal("Unable to insert to DB: %v", err)
-				}
-				continue
-			}
-
-			if rawLog.Address == poolContractAddress && rawLog.Topics[0] == poolReferralPaymentSigantureHash {
-				poolContractReferralPaymentLog, err := poolContract.ParseReferralPayment(rawLog)
-				if err != nil {
-					log.Fatalf("Unable to parse poolContract::ReferralPayment %v", err)
-				}
-		
-				_, err = db.Exec("INSERT IGNORE INTO ref_payments (tx, block_number, ref, payment_received) VALUES (?, ?, ?, ?)",
-					rawLog.TxHash.String(),
-					rawLog.BlockNumber,
-					poolContractReferralPaymentLog.Referrer.Hex(),
-					big.NewInt(0).Div(poolContractReferralPaymentLog.ReferralPaymentAmount, big.NewInt(0x100000000)).Uint64());
-
-				if err != nil {
-					log.Fatal("Unable to insert to DB: %v", err)
-				}
-				continue
-			}
-		}
 
 		for {
 			time.Sleep(time.Duration(5)*time.Second)
@@ -240,42 +153,12 @@ func runScanner(db *sql.DB) {
 }
 
 func ensureDatabases(db *sql.DB) {
-	log.Printf("Creating table pnl_changes")
-	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS pnl_changes(
+	log.Printf("Creating table Link")
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS Link(
 		tx CHAR(100) PRIMARY KEY,
 		block_number BIGINT NOT NULL,
-		stored_eth BIGINT NOT NULL,
-		total_shares BIGINT NOT NULL
-	)`)
-	if err != nil {
-		log.Fatal("Failed to create table:", err)
-	}
-
-	log.Printf("Creating table ref_payments")
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS ref_payments(
-		tx CHAR(100) PRIMARY KEY,
-		block_number BIGINT NOT NULL,
-		ref CHAR(42) NOT NULL,
-		payment_received BIGINT NOT NULL
-	)`)
-	if err != nil {
-		log.Fatal("Failed to create table:", err)
-	}
-	log.Printf("Creating table recent_games")
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS recent_games(
-		tx CHAR(100) PRIMARY KEY,
-		block_number BIGINT NOT NULL,
-		game_type CHAR(10) NOT NULL,
-		player CHAR(42) NOT NULL,
-		amount BIGINT NOT NULL
-	)`)
-	if err != nil {
-		log.Fatal("Failed to create table:", err)
-	}
-
-	log.Printf("Creating table system status")
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS system_status(
-		last_block BIGINT NOT NULL
+		user CHAR(42) NOT NUL,
+		identity CHAR(42) NOT NUL
 	)`)
 	if err != nil {
 		log.Fatal("Failed to create table:", err)
@@ -313,25 +196,25 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 
-	case "/pnl":
-		type PnlEntry = struct {
-			Block uint64 `json:"block"`
-			SharePrice float64 `json:"share_price"`
+	case "/allLinks":
+		type Link = struct {
+			User string `json:"user"`
+			Identity string `json:"identity"`
 		}
 		type Response = struct {
-			Data []PnlEntry `json:"data"`
+			Data []Link `json:"data"`
 		};
 		var resp Response
 
-		rows, err := db.Query("select block_number, CAST(stored_eth as FLOAT)/CAST(total_shares as FLOAT) from pnl_changes;")
+		rows, err := db.Query("SELECT user, identity FROM Link;")
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
 		for rows.Next() {
-			var entry PnlEntry
-			err = rows.Scan(&entry.Block, &entry.SharePrice)
+			var entry Link
+			err = rows.Scan(&entry.User, &entry.Identity)
 			if err != nil {
 				break
 			}
@@ -361,104 +244,5 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(resp)
 		return
 
-	case "/referral-payments":
-		type ReferralPaymentEntry = struct {
-			Address string `json:"address"`
-			Amount float64 `json:"amount"`
-		}
-		type Response = struct {
-			Data []ReferralPaymentEntry `json:"data"`
-		};
-		var resp Response
-
-		rows, err := db.Query("select ref, SUM(payment_received) as amount from ref_payments group by ref;")
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		for rows.Next() {
-			var entry ReferralPaymentEntry
-			var amount uint64
-			err = rows.Scan(&entry.Address, &amount)
-			entry.Amount = float64(amount) / 1e10
-			if err != nil {
-				break
-			}
-			resp.Data = append(resp.Data, entry)
-		}
-		// Check for errors during rows "Close".
-		// This may be more important if multiple statements are executed
-		// in a single batch and rows were written as well as read.
-		if closeErr := rows.Close(); closeErr != nil {
-			http.Error(w, closeErr.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// Check for row scan error.
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// Check for errors during row iteration.
-		if err = rows.Err(); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		json.NewEncoder(w).Encode(resp)
-		return
-
-	case "/recent-games":
-		type RecentGameEntry = struct {
-			Address string `json:"address"`
-			BlockNumber uint64 `json:"block_number"`
-			GameType string `json:"game_type"`
-			WinAmount float64 `json:"win_amount"`
-		}
-		type Response = struct {
-			Data []RecentGameEntry `json:"data"`
-		};
-		var resp Response
-
-		rows, err := db.Query("select block_number, game_type, player, amount from recent_games order by block_number desc limit 25;")
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		for rows.Next() {
-			var entry RecentGameEntry
-			err = rows.Scan(&entry.BlockNumber, &entry.GameType, &entry.Address, &entry.WinAmount)
-			if err != nil {
-				break
-			}
-			resp.Data = append(resp.Data, entry)
-		}
-		// Check for errors during rows "Close".
-		// This may be more important if multiple statements are executed
-		// in a single batch and rows were written as well as read.
-		if closeErr := rows.Close(); closeErr != nil {
-			http.Error(w, closeErr.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// Check for row scan error.
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// Check for errors during row iteration.
-		if err = rows.Err(); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		json.NewEncoder(w).Encode(resp)
-		return
 	}
 }
