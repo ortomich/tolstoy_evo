@@ -245,4 +245,54 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 
 	}
+
+	case "/user":
+		type Link = struct {
+			Identity string `json:"identity"`
+		}
+		type Response = struct {
+			Data []Link `json:"data"`
+		};
+		var resp Response
+
+		rows, err := db.Query("SELECT identity FROM Link WHERE user = ?;", r.URL.Query().Get("user"))
+
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		for rows.Next() {
+			var entry Link
+			err = rows.Scan(&entry.Identity)
+			if err != nil {
+				break
+			}
+			resp.Data = append(resp.Data, entry)
+		}
+		// Check for errors during rows "Close".
+		// This may be more important if multiple statements are executed
+		// in a single batch and rows were written as well as read.
+		if closeErr := rows.Close(); closeErr != nil {
+			http.Error(w, closeErr.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// Check for row scan error.
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// Check for errors during row iteration.
+		if err = rows.Err(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		json.NewEncoder(w).Encode(resp)
+		return
+
+	}
 }
